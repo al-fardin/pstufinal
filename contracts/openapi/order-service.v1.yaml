@@ -1,0 +1,330 @@
+﻿openapi: 3.1.0
+info:
+  title: Valerix Order Service API
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:3001
+
+paths:
+  /api/v1/orders:
+    post:
+      summary: Create an order
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '201':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+    get:
+      summary: List orders
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Order list
+
+  /api/v1/orders/{orderId}:
+    get:
+      summary: Get an order
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Order found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/orders/{orderId}/ship:
+    post:
+      summary: Attempt shipment inventory adjustment
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/TestFaultMode'
+      responses:
+        '200':
+          description: Shipment confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShipmentConfirmedEnvelope'
+        '202':
+          description: Inventory outcome uncertain
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShipmentUncertainEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /health:
+    get:
+      summary: Dependency-aware Order health
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: Unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      responses:
+        '200':
+          description: Prometheus text format
+
+components:
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    TestFaultMode:
+      name: X-Test-Fault-Mode
+      in: header
+      required: false
+      schema:
+        type: string
+        enum:
+          - none
+          - latency
+          - crash_after_commit
+
+  schemas:
+    OrderItem:
+      type: object
+      additionalProperties: false
+      required: [productId, quantity]
+      properties:
+        productId:
+          type: string
+          minLength: 1
+        quantity:
+          type: integer
+          minimum: 1
+
+    CreateOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [customerId, items]
+      properties:
+        customerId:
+          type: string
+          minLength: 1
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/OrderItem'
+
+    OrderStatus:
+      type: string
+      enum:
+        - READY_TO_SHIP
+        - INVENTORY_PENDING
+        - INVENTORY_UNCERTAIN
+        - SHIPPED
+        - FAILED
+
+    Order:
+      type: object
+      required:
+        - orderId
+        - customerId
+        - items
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        customerId:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        operationId:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: 'null'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Meta:
+      type: object
+      required: [correlationId]
+      properties:
+        correlationId:
+          type: string
+          format: uuid
+
+    OrderEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: '#/components/schemas/Order'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ShipmentConfirmedEnvelope:
+      type: object
+      required: [data, inventoryOutcome, meta]
+      properties:
+        data:
+          $ref: '#/components/schemas/Order'
+        inventoryOutcome:
+          type: string
+          enum:
+            - APPLIED
+            - ALREADY_APPLIED
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ShipmentUncertainEnvelope:
+      type: object
+      required: [data, warning, meta]
+      properties:
+        data:
+          $ref: '#/components/schemas/Order'
+        warning:
+          type: object
+          required: [code, message, retryable]
+          properties:
+            code:
+              type: string
+              const: INVENTORY_OUTCOME_UNCERTAIN
+            message:
+              type: string
+            retryable:
+              type: boolean
+              const: true
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    Error:
+      type: object
+      required: [code, message, retryable, correlationId, details]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        retryable:
+          type: boolean
+        correlationId:
+          type: string
+          format: uuid
+        details:
+          type: object
+          additionalProperties: true
+
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/Error'
+
+    DependencyHealth:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+
+    Health:
+      type: object
+      required: [status, service, dependencies]
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+        service:
+          type: string
+          const: order-service
+        dependencies:
+          type: object
+          required: [database, inventory]
+          properties:
+            database:
+              $ref: '#/components/schemas/DependencyHealth'
+            inventory:
+              $ref: '#/components/schemas/DependencyHealth'
+
+  responses:
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: Order not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Conflict:
+      description: Business conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unavailable:
+      description: Dependency unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
